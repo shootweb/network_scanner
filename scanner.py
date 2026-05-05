@@ -179,23 +179,29 @@ def discover_hosts(target_str: str) -> list[str]:
 
 # ─────────────────────────── Phase 2: Port & Service Scan ───────────────────────────
 
-def scan_host(ip: str, run_vuln: bool) -> dict:
+def scan_host(ip: str, run_vuln: bool, full_ports: bool = False) -> dict:
     """
-    Full TCP SYN scan + service/version detection + OS detection + default scripts.
-    Optionally append the 'vuln' script category.
-    Returns parsed dict of findings.
+    Two-pass TCP SYN scan strategy:
+      Pass 1 (always): top 1000 ports, fast timing, parallel probes
+      Pass 2 (--full-ports only): remaining ports after pass 1
+
+    Service/version detection, OS fingerprinting, and optional vuln scripts
+    run only on discovered open ports (--version-light keeps it quick).
     """
     scripts = "default"
     if run_vuln:
         scripts = "default,vuln"
 
+    # Pass 1: top 1000 ports — covers ~95% of real-world services in seconds
+    port_arg = "-p-" if full_ports else "--top-ports 1000"
     cmd = (
-        f"nmap -sS -sV -O --version-intensity 7 "
+        f"nmap -sS -sV -O --version-intensity 5 "
         f"--script={scripts} "
-        f"-p- -T4 --open "
+        f"{port_arg} -T4 --open "
+        f"--min-rate 1000 --max-retries 2 "
         f"{ip} -oX -"
     )
-    out, err = run(cmd, f"Deep scan on {ip}")
+    out, err = run(cmd, f"Deep scan on {ip} ({'all ports' if full_ports else 'top 1000 ports'})")
 
     host_data = {
         "ip": ip,
@@ -480,8 +486,7 @@ def _build_ports_sheet(ws, results):
     ws.row_dimensions[1].height = 22
     for j, (h, w) in enumerate(zip(hdrs, widths), 1):
         ws.column_dimensions[get_column_letter(j)].width = w
-        style_header_cell(ws.cell(row=1, column=j))
-        ws.cell(row=1, column=j).value = h
+        style_header_cell(ws.cell(row=1, column=j), h)
 
     row = 2
     for rd in results:
@@ -580,6 +585,11 @@ def main():
         help="Skip nmap vuln script category (faster scan).",
     )
     parser.add_argument(
+        "--full-ports",
+        action="store_true",
+        help="Scan all 65535 ports instead of top 1000 (much slower, use on specific hosts).",
+    )
+    parser.add_argument(
         "-o", "--output",
         default=f"pentest_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         help="Output filename prefix (no extension). Default: pentest_scan_<timestamp>",
@@ -597,6 +607,7 @@ def main():
 """)
 
     run_vuln = not args.no_vuln
+    full_ports = args.full_ports
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # ── Determine targets ──
@@ -644,13 +655,14 @@ def main():
 
     # ── Phase 2: Deep Scan ──
     print(f"\n[*] Phase 2 — Deep Scan on {len(live_hosts)} host(s)")
-    print(f"    Vuln scripts: {'ENABLED' if run_vuln else 'DISABLED'}")
-    print("    (This may take several minutes per host)\n")
+    print(f"    Vuln scripts : {'ENABLED' if run_vuln else 'DISABLED'}")
+    print(f"    Port range   : {'ALL 65535 ports' if full_ports else 'Top 1000 (use --full-ports for all)'}")
+    print("    Tip: typical scan of 6 hosts ~2-5 min. --full-ports adds 10-30 min/host.\n")
 
     results = []
     for i, ip in enumerate(live_hosts, 1):
         print(f"\n  [{i}/{len(live_hosts)}] Scanning {ip} ...")
-        data = scan_host(ip, run_vuln)
+        data = scan_host(ip, run_vuln, full_ports=args.full_ports)
         results.append(data)
         print(f"    Ports open: {len(data['ports'])}  |  Vulns: {len(data['vulns'])}  |  OS: {data['os'] or 'Unknown'}")
 
