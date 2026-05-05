@@ -585,6 +585,12 @@ def main():
         help="Skip nmap vuln script category (faster scan).",
     )
     parser.add_argument(
+        "--from-json",
+        metavar="JSON_FILE",
+        help="Skip scanning entirely and generate the Excel report from a previously saved JSON file.",
+        default=None,
+    )
+    parser.add_argument(
         "--full-ports",
         action="store_true",
         help="Scan all 65535 ports instead of top 1000 (much slower, use on specific hosts).",
@@ -595,6 +601,28 @@ def main():
         help="Output filename prefix (no extension). Default: pentest_scan_<timestamp>",
     )
     args = parser.parse_args()
+
+    # ── JSON-to-Excel shortcut (no scan needed, no root needed) ──
+    if args.from_json:
+        json_path = args.from_json
+        if not os.path.isfile(json_path):
+            print(f"[!] File not found: {json_path}")
+            sys.exit(1)
+        print(f"[*] Loading scan data from {json_path} ...")
+        with open(json_path) as f:
+            saved = json.load(f)
+        meta    = saved.get("meta", {})
+        results = saved.get("results", [])
+        # Recompute totals in case meta is stale
+        meta["total_ports"] = sum(len(r.get("ports", [])) for r in results)
+        meta["total_vulns"] = sum(len(r.get("vulns", [])) for r in results)
+        output_prefix = args.output if args.output != f"pentest_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}" else os.path.splitext(json_path)[0]
+        output_xlsx = output_prefix + ".xlsx"
+        print(f"[*] Loaded {len(results)} host(s)  |  {meta['total_ports']} ports  |  {meta['total_vulns']} vulns")
+        print(f"[*] Generating Excel report ...")
+        build_excel(results, output_xlsx, meta)
+        print(f"[+] Done → {output_xlsx}")
+        sys.exit(0)
 
     check_root()
     check_nmap()
